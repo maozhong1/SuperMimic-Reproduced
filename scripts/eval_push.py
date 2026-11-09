@@ -18,35 +18,38 @@ import torch
 import tyro
 
 
-def make_tpose_clip(out: Path, seconds: float = 20.0, fps: int = 50) -> Path:
+def make_tpose_clip(out: Path, robot: str = "g1", seconds: float = 20.0, fps: int = 50) -> Path:
     """Write a 50 Hz T-pose npz (standing still) via the converter's FK."""
-    from supermimic.data.motion_convert import G1_JOINT_NAMES, forward_kinematics, load_g1_model, ResampledMotion
+    from supermimic.data.motion_convert import ResampledMotion, forward_kinematics
+    from supermimic.robots import get_robot, stand_root_height
 
+    spec = get_robot(robot)
+    names = spec.joint_names
     T = int(seconds * fps)
-    q = np.zeros((T, len(G1_JOINT_NAMES)))
-    q[:, G1_JOINT_NAMES.index("left_shoulder_roll_joint")] = 1.5
-    q[:, G1_JOINT_NAMES.index("right_shoulder_roll_joint")] = -1.5
+    q = np.zeros((T, len(names)))
+    q[:, names.index("left_shoulder_roll_joint")] = 1.5
+    q[:, names.index("right_shoulder_roll_joint")] = -1.5
     motion = ResampledMotion(
         fps=fps,
-        root_pos=np.tile(np.array([0.0, 0.0, 0.793]), (T, 1)),
+        root_pos=np.tile(np.array([0.0, 0.0, stand_root_height(spec)]), (T, 1)),
         root_quat=np.tile(np.array([1.0, 0.0, 0.0, 0.0]), (T, 1)),
         joint_pos=q,
         root_lin_vel_w=np.zeros((T, 3)),
         root_ang_vel_w=np.zeros((T, 3)),
-        joint_vel=np.zeros((T, 29)),
+        joint_vel=np.zeros((T, len(names))),
     )
-    model = load_g1_model()
+    model = spec.load_model()
     b = forward_kinematics(model, motion)
     np.savez(
         out,
         fps=np.array([fps], dtype=np.float32),
         joint_pos=q.astype(np.float32),
-        joint_vel=np.zeros((T, 29), np.float32),
+        joint_vel=np.zeros((T, len(names)), np.float32),
         body_pos_w=b.pos_w.astype(np.float32),
         body_quat_w=b.quat_w.astype(np.float32),
         body_lin_vel_w=b.lin_vel_w.astype(np.float32),
         body_ang_vel_w=b.ang_vel_w.astype(np.float32),
-        joint_names=np.array(G1_JOINT_NAMES),
+        joint_names=np.array(names),
         body_names=np.array(b.body_names),
         source=np.array("synthetic_tpose"),
         input_fps=np.array([fps], dtype=np.float32),
@@ -61,8 +64,8 @@ def main(ckpt: Path, speeds: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0), num_envs:
 
     policy, cfg = load_policy_from_checkpoint(ckpt, device)
     tmp = Path(tempfile.mkdtemp()) / "tpose.npz"
-    make_tpose_clip(tmp)
-    args = SuperMimicEnvCfgArgs(npz_files=[str(tmp)], num_envs=num_envs, action_noise_std=0.0, obs_noise=False, reset_noise=False, domain_randomization=False, sampling_mode="start", record_transitions=False, episode_length_s=1e5, future_frames=cfg["env"]["future_frames"], anchor_obs=cfg["env"].get("anchor_obs", False), seed=0)
+    make_tpose_clip(tmp, robot=cfg["robot"])
+    args = SuperMimicEnvCfgArgs(npz_files=[str(tmp)], robot=cfg["robot"], num_envs=num_envs, action_noise_std=0.0, obs_noise=False, reset_noise=False, domain_randomization=False, sampling_mode="start", record_transitions=False, episode_length_s=1e5, future_frames=cfg["env"]["future_frames"], anchor_obs=cfg["env"].get("anchor_obs", False), seed=0)
     env = make_env(args, device=device)
     robot = env.scene["robot"]
     cmd = env.command_manager.get_term("motion")

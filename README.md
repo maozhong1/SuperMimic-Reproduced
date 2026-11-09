@@ -82,7 +82,13 @@ env -u PYTHONPATH uv run torchrun --nproc_per_node 4 -m supermimic.scripts.train
   --data.library data/library/bones_seed_compact.pt --env.num-envs 4096 --policy-trainer.batch-size 2048
 
 # Options: --env.anchor-obs (BeyondMimic anchor-relative observation, deviates from the paper), --resume <ckpt>
+
+# Other robot: --robot gr2 (Fourier GR2, fixed-head 27 DoF; MJCF + meshes from UniLab in src/supermimic/assets/gr2/)
+env -u PYTHONPATH uv run sm-train --robot gr2 --run-name gr2 --data.npz-dir data/npz/bones_seed_gr2 \
+  --env.num-envs 4096 --policy-trainer.batch-size 2048
 ```
+
+Robots are described in `src/supermimic/robots/` (MJCF, actuated joint order, tracked / anchor / root bodies, foot geoms, mjlab entity); every tensor width follows from the joint count N (state 13+2N, observation 3N+6, goal 2N+10 per frame, context N+4). Checkpoints record the robot, so evaluation, replay and media scripts pick it up; checkpoints and libraries from before this change are G1. GR2 keeps UniLab's control contract (XML position actuators, action scale 0.25·effort/kp, zero default pose) and uses `base` (pelvis) as both anchor and root.
 
 Defaults follow Table A.5/A.6: 4096 environments, H=32, UTD 0.4, γ=0.99, critic 5 epochs × 4 minibatches, 10 world-model batches per update, cosine decay to 0.03× over 250k iterations. Logs go to TensorBoard under `logs/<run>/tb`; checkpoints every `--schedule.checkpoint-interval` iterations.
 
@@ -107,11 +113,12 @@ ffmpeg -i media/showcase.mp4 -vf "fps=10,scale=560:-1,split[a][b];[a]palettegen=
 
 ```
 src/supermimic/
-  config.py            TrainConfig (tyro CLI: data / env / world_model / policy / wm_trainer / policy_trainer / schedule)
+  config.py            TrainConfig (tyro CLI: robot / data / env / world_model / policy / wm_trainer / policy_trainer / schedule)
+  robots/              RobotSpec per humanoid (g1, gr2): MJCF, joint order, tracked bodies, mjlab entity, action scale
   data/                CSV → 50 Hz npz conversion, replay buffer, simulator recorder
   envs/                mjlab ManagerBasedRlEnv config: multi-clip motion command, return-based resets, full-state I/O, sim context
     mdp/               motion_library (fp16 compact library + online FK), commands, observations, rewards, terminations
-  kinematics/          differentiable G1 position + velocity FK (torch)
+  kinematics/          differentiable position + velocity FK of any free-root hinge tree (torch)
   world_model/         canonical-state MLP dynamics, termination head, analytic reward/observation heads, trainer
   imagination/         imagined rollouts, Eq. 2 objective + GAE critic targets, BPTT policy trainer, torch.compile wrapper
   policy/              MotionEncoder (680 → 32) + policy / critic MLPs
@@ -203,6 +210,7 @@ The design documents are in Chinese; a full Chinese version of this README follo
 - Python 3.12 + `uv`；固定 torch 2.14.1+cu130、mujoco 3.16、warp 1.18、mjlab `8bb2bc9`；在 RTX 5090（驱动 580）上验证。系统 `PYTHONPATH` 若带有其他 Python 包（例如 ROS），命令前加 `env -u PYTHONPATH`。
 - 数据不随仓库分发：LAFAN1 来自 HF `lvhaidong/LAFAN1_Retargeting_Dataset` 的 `g1/`；BONES-SEED 来自 HF `bones-studio/seed` 的 `g1.tar.gz`，转 50 Hz npz → 过滤 → fp16 紧凑库（6.7 GB，常驻显存）。
 - 训练默认超参按 Table A.5/A.6；多卡用 `torchrun --nproc_per_node 4 -m supermimic.scripts.train`，一进程一卡。
+- 其他机器人：`--robot gr2`（傅里叶 GR2，固定头部 27 自由度；UniLab 的 MJCF 与网格在 `src/supermimic/assets/gr2/`）。机器人描述在 `src/supermimic/robots/`，所有张量宽度由关节数 N 推出（状态 13+2N、观测 3N+6、每帧目标 2N+10、上下文 N+4）；检查点记录机器人类型，评测/回放/录制脚本自动读取，旧检查点与旧动作库按 G1 处理。GR2 沿用 UniLab 的控制约定（XML 位置执行器、动作缩放 0.25·力矩/kp、零位默认姿态），锚点与根部都是 `base`（骨盆）。
 - 录制与渲染：`scripts/media/record_rollout.py` 按 Appendix F 协议记录每步的机器人与参考 qpos，`scripts/media/render_rollout.py` 用 MuJoCo 离屏渲染（实体 = 策略，半透明 = 参考），`--segments` 选时间窗、`--titles` 写标题、`--concat` 拼接。
 
 ## 文档

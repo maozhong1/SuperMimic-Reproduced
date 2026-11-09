@@ -1,7 +1,7 @@
 """Analytic heads of the world model (plan D4): observation, reward, termination.
 
-Everything here is a pure differentiable function of the 71-d simulator state
-``s = [qpos(36) | qvel(35)]`` (root position expressed relative to the env origin,
+Everything here is a pure differentiable function of the simulator state
+``s = [qpos(7+N) | qvel(6+N)]`` (root position expressed relative to the env origin,
 see ``StateIO``), the previous clean action, the sim context ``xi`` and the
 reference frame, so the same code serves the simulator-side tests and the
 imagined rollouts.
@@ -14,28 +14,25 @@ from dataclasses import dataclass
 import torch
 
 from supermimic.envs.mdp.rewards import TrackingRewardCfg, tracking_reward_terms
-from supermimic.kinematics.g1_fk import G1Kinematics
+from supermimic.kinematics.fk import HumanoidKinematics
 from supermimic.kinematics.rotations import projected_gravity, quat_apply_inverse
-
-OBS_DIM = 93
-# Term layout of the ``policy`` observation group (order matters: term-major history).
-OBS_TERMS = (("joint_pos", 29), ("joint_vel", 29), ("base_ang_vel", 3), ("projected_gravity", 3), ("actions", 29))
+from supermimic.world_model.state_spec import split_state
 
 
-def split_state(s: torch.Tensor):
-    """-> root_pos (…,3), root_quat (…,4), joint_pos (…,29), root_lin_vel_w (…,3), root_ang_vel_b (…,3), joint_vel (…,29)."""
-    return s[..., 0:3], s[..., 3:7], s[..., 7:36], s[..., 36:39], s[..., 39:42], s[..., 42:71]
+def obs_terms(nj: int) -> tuple[tuple[str, int], ...]:
+    """Term layout of the ``policy`` observation group (order matters: term-major history); 3N+6 wide."""
+    return (("joint_pos", nj), ("joint_vel", nj), ("base_ang_vel", 3), ("projected_gravity", 3), ("actions", nj))
 
 
 def analytic_observation(
     s: torch.Tensor, prev_action: torch.Tensor, xi: torch.Tensor, default_joint_pos: torch.Tensor
 ) -> torch.Tensor:
-    """Noise-free 93-d proprioceptive observation (paper Table A.1) from state + context.
+    """Noise-free (3N+6)-d proprioceptive observation (paper Table A.1) from state + context.
 
-    xi[..., 1:30] is the encoder bias: observed joint positions are ``q + bias - q0``.
+    xi[..., 1:1+N] is the encoder bias: observed joint positions are ``q + bias - q0``.
     """
     _, root_quat, q, _, ang_b, qd = split_state(s)
-    bias = xi[..., 1:30]
+    bias = xi[..., 1 : 1 + q.shape[-1]]
     return torch.cat([q + bias - default_joint_pos, qd, ang_b, projected_gravity(root_quat), prev_action], dim=-1)
 
 
@@ -55,11 +52,11 @@ ANCHOR_OBS_DIM = 9
 
 
 def flatten_history_term_major(hist: torch.Tensor) -> torch.Tensor:
-    """(H, N, 93) oldest→newest  ->  (N, 930) in mjlab's term-major layout [A_t0..A_tH-1, B_t0..]."""
-    H, N, _ = hist.shape
+    """(H, n, 3N+6) oldest→newest  ->  (n, H*(3N+6)) in mjlab's term-major layout [A_t0..A_tH-1, B_t0..]."""
+    H, N, D = hist.shape
     chunks = []
     start = 0
-    for _, d in OBS_TERMS:
+    for _, d in obs_terms((D - 6) // 3):
         chunks.append(hist[:, :, start : start + d].permute(1, 0, 2).reshape(N, H * d))
         start += d
     return torch.cat(chunks, dim=-1)
@@ -82,7 +79,7 @@ class AnalyticHeads:
 
     def __init__(
         self,
-        fk: G1Kinematics,
+        fk: HumanoidKinematics,
         tracked_body_names: tuple[str, ...],
         anchor_body_name: str,
         root_body_name: str,
@@ -99,7 +96,7 @@ class AnalyticHeads:
         self.reward_cfg = reward_cfg or TrackingRewardCfg()
 
     def robot_bodies(self, s: torch.Tensor) -> dict[str, torch.Tensor]:
-        out = self.fk(s[..., :36], s[..., 36:])
+        out = self.fk(s[..., : self.fk.nq], s[..., self.fk.nq :])
         idx = self.tracked_idx
         return {
             "pos": out["pos"][..., idx, :],
@@ -125,7 +122,7 @@ class AnalyticHeads:
             anchor_index=self.anchor_index,
             action=action,
             prev_action=prev_action,
-            joint_pos=s_next[..., 7:36],
+            joint_pos=s_next[..., 7 : self.fk.nq],
             soft_limits=self.soft_limits,
             cfg=self.reward_cfg,
         )

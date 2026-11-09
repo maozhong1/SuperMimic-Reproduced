@@ -37,14 +37,17 @@ def load_policy_from_checkpoint(path: str | Path, device: str) -> tuple[Policy, 
     policy = Policy(pcfg).to(device)
     policy.load_state_dict(ck["policy"])
     policy.eval()
-    return policy, ck["config"]
+    cfg = ck["config"]
+    cfg.setdefault("robot", "g1")  # checkpoints written before supermimic.robots are G1
+    return policy, cfg
 
 
 @torch.no_grad()
-def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", num_envs: int | None = None, future_frames: int = 10, verbose: bool = True, anchor_obs: bool = False) -> list[ClipResult]:
+def run_benchmark(policy: Policy, npz_files: list[str], device: str = "cuda:0", num_envs: int | None = None, future_frames: int = 10, verbose: bool = True, anchor_obs: bool = False, robot: str = "g1") -> list[ClipResult]:
     num_envs = min(num_envs or 1024, len(npz_files))
     args = SuperMimicEnvCfgArgs(
         npz_files=npz_files,
+        robot=robot,
         num_envs=num_envs,
         future_frames=future_frames,
         episode_length_s=1.0e5,  # clip end decides

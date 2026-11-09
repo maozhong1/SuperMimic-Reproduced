@@ -17,7 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-from mjlab.utils.lab_api.math import quat_apply, quat_box_minus, quat_inv, quat_mul, yaw_quat
+from mjlab.utils.lab_api.math import quat_apply, quat_inv, quat_mul, yaw_quat
+
+from supermimic.kinematics.rotations import rotvec_from_quat
 
 
 @dataclass
@@ -67,8 +69,11 @@ def reanchor_reference(
 
 
 def _sq_quat_err(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
-    """Squared geodesic angle between quaternions, smooth at zero (== quat_error_magnitude**2)."""
-    v = quat_box_minus(q1, q2)
+    """Squared geodesic angle between quaternions, smooth at zero (== quat_error_magnitude**2).
+
+    Same value as mjlab's ``quat_box_minus``, whose gradient is NaN at exactly zero error (hit e.g.
+    by the anchor body when anchor = root and the reference differs from the robot by a pure yaw)."""
+    v = rotvec_from_quat(quat_mul(q1, quat_inv(q2)))
     return (v * v).sum(-1)
 
 
@@ -86,7 +91,7 @@ def tracking_reward_terms(
     action: torch.Tensor,
     prev_action: torch.Tensor,
     joint_pos: torch.Tensor,
-    soft_limits: torch.Tensor,  # (29, 2) or (N, 29, 2)
+    soft_limits: torch.Tensor,  # (J, 2) or (N, J, 2)
     cfg: TrackingRewardCfg,
 ) -> dict[str, torch.Tensor]:
     """Per-term weighted, dt-scaled rewards (N,) plus 'total'."""

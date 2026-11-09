@@ -18,7 +18,7 @@ import numpy as np
 import tyro
 from PIL import Image, ImageDraw, ImageFont
 
-from mjlab.asset_zoo.robots.unitree_g1.g1_constants import G1_XML
+from supermimic.robots import get_robot
 
 GHOST_RGBA = "0.25 0.50 1.0 0.22"
 
@@ -26,12 +26,16 @@ GHOST_RGBA = "0.25 0.50 1.0 0.22"
 def two_robot_xml(mjcf: Path, root_body: str) -> str:
     xml = mjcf.read_text()
     xml = re.sub(r'meshdir="([^"]*)"', lambda m: f'meshdir="{(mjcf.parent / m.group(1)).resolve()}"', xml, count=1)
+    # included files only carry actuators / sensors (GR2), which drawing does not need
+    xml = re.sub(r"<include\b[^>]*/>", "", xml)
     # strip anything that is not needed for drawing (actuators / sensors / keyframes keep working but are unused)
     body = xml[xml.index(f'<body name="{root_body}"') : xml.rindex("</worldbody>")]
     ghost = re.sub(r' name="([^"]+)"', r' name="ref_\1"', body)
     # keep only the visual mesh geoms of the ghost, visual-only and translucent
     ghost = re.sub(r"<geom\b[^>]*/>", lambda m: "" if "mesh=" not in m.group(0) else m.group(0), ghost)
     ghost = re.sub(r' (contype|conaffinity|group|material|rgba|class)="[^"]*"', "", ghost)
+    # explicit geom types (GR2) would duplicate the type="mesh" added below; joint types (type="free") stay
+    ghost = re.sub(r"<geom\b[^>]*/>", lambda m: re.sub(r' (type|density|condim|friction|solref)="[^"]*"', "", m.group(0)), ghost)
     ghost = ghost.replace("<geom ", f'<geom type="mesh" contype="0" conaffinity="0" group="1" rgba="{GHOST_RGBA}" ')
     ghost = re.sub(r"<site[^>]*/>", "", ghost)
     ghost = re.sub(r"<freejoint[^>]*/>", '<freejoint name="ref_root"/>', ghost, count=1)
@@ -81,7 +85,9 @@ def main(traj: Path, out_dir: Path, fps: int = 25, seconds: float | None = None,
          concat: Path | None = None, segments: list[str] | None = None, titles: list[str] | None = None) -> None:
     """``segments``: per-clip time windows as ``name:start:end`` (seconds); ``titles``: ``name=Display title`` overrides."""
 
-    model = mujoco.MjModel.from_xml_string(two_robot_xml(Path(G1_XML), "pelvis"))
+    d = dict(np.load(traj))
+    robot = get_robot(str(d.get("robot", "g1")))  # rollouts recorded before supermimic.robots are G1
+    model = mujoco.MjModel.from_xml_string(two_robot_xml(robot.xml_path, robot.root_body))
     data = mujoco.MjData(model)
     renderer = mujoco.Renderer(model, height, width)
     opt = mujoco.MjvOption()
@@ -98,7 +104,6 @@ def main(traj: Path, out_dir: Path, fps: int = 25, seconds: float | None = None,
     except OSError:
         font = font_small = ImageFont.load_default()
 
-    d = dict(np.load(traj))
     names = [str(n) for n in d["names"]]
     nq_robot = d["robot_qpos"].shape[-1]
     assert model.nq == 2 * nq_robot, (model.nq, nq_robot)

@@ -29,7 +29,9 @@ class MLP(nn.Module):
 
 
 class DynamicsMLP(nn.Module):
-    """delta = f(canonical(s), a, xi_norm) -> (…, 70). Zero-initialised last layer (identity dynamics at init)."""
+    """delta = f(canonical(s), a, xi_norm) -> (…, 12+2N). Zero-initialised last layer (identity dynamics at init).
+
+    Defaults are the G1 sizes (N = 29); ``WorldModel`` passes the robot's."""
 
     def __init__(self, feat_dim: int = 71, act_dim: int = 29, xi_dim: int = 33, hidden=(2048, 2048, 2048), out_dim: int = 70):
         super().__init__()

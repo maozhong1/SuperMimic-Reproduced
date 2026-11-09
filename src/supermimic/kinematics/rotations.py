@@ -57,7 +57,9 @@ def rotvec_from_quat(q: torch.Tensor) -> torch.Tensor:
     q = quat_canonical(q)
     w = q[..., :1]
     xyz = q[..., 1:]
-    s = xyz.norm(dim=-1, keepdim=True)
+    # Floored norm: |xyz| has a 0/0 gradient at the identity (exactly zero error); below the floor
+    # the series branch is used, whose gradient (≈ 2 * dxyz) is the correct one.
+    s = (xyz * xyz).sum(-1, keepdim=True).clamp_min(1e-24).sqrt()
     angle = 2.0 * torch.atan2(s, w)
     small = s < 1e-6
     # angle / sin(angle/2) == angle / s ; series: 2 + angle^2/12 ... (with s ~ angle/2)

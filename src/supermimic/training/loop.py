@@ -11,13 +11,12 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from supermimic.config import TrainConfig
-from supermimic.data.motion_convert import load_g1_model
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
 from supermimic.envs.mdp.motion_library import discover_npz
-from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
 from supermimic.imagination.policy_trainer import PolicyTrainer
-from supermimic.kinematics.g1_fk import G1Kinematics
+from supermimic.kinematics.fk import HumanoidKinematics
 from supermimic.policy.nets import Critic, Policy
+from supermimic.robots import get_robot
 from supermimic.training.distributed import allreduce_mean, broadcast_params, finalize, init_distributed, world_size
 from supermimic.training.schedule import cosine_lr
 from supermimic.world_model.heads import AnalyticHeads
@@ -28,7 +27,10 @@ from supermimic.world_model.world_model import WorldModel
 class Trainer:
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
-        cfg.policy.goal_dim = cfg.env.future_frames * 68 + (9 if cfg.env.anchor_obs else 0)
+        self.robot = robot = get_robot(cfg.robot)
+        cfg.policy.num_joints = robot.num_joints
+        cfg.world_model.state_spec.num_joints = robot.num_joints
+        cfg.policy.goal_dim = cfg.env.future_frames * robot.goal_feat_dim + (9 if cfg.env.anchor_obs else 0)
         cfg.policy_trainer.anchor_obs = cfg.env.anchor_obs
         self.rank, local_rank, self.world = init_distributed()
         self.is_main = self.rank == 0
@@ -56,6 +58,7 @@ class Trainer:
         self.env = make_env(
             SuperMimicEnvCfgArgs(
                 npz_files=[str(f) for f in files],
+                robot=robot.name,
                 num_envs=cfg.env.num_envs,
                 future_frames=cfg.env.future_frames,
                 episode_length_s=cfg.env.episode_length_s,
@@ -78,8 +81,8 @@ class Trainer:
         self.buffer = self.recorder.buffer
         robot = env.scene["robot"]
 
-        fk = G1Kinematics(load_g1_model(), device=self.device)
-        heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
+        fk = HumanoidKinematics(self.robot.load_model(), device=self.device)
+        heads = AnalyticHeads(fk, self.robot.tracked_bodies, self.robot.anchor_body, self.robot.root_body, robot.data.soft_joint_pos_limits[0].clone(), robot.data.default_joint_pos[0].clone())
         self.wm = WorldModel(cfg.world_model, heads, self.device)
         self.policy = Policy(cfg.policy).to(self.device)
         self.critic = Critic(cfg.critic, pcfg=cfg.policy).to(self.device)
@@ -126,6 +129,9 @@ class Trainer:
 
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
+        ck_robot = ck["config"].get("robot", "g1")
+        if ck_robot != self.robot.name:
+            raise ValueError(f"{path} was trained on {ck_robot}, this run is {self.robot.name}")
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])

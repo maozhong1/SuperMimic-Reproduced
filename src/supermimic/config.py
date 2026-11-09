@@ -51,6 +51,7 @@ class ScheduleCfg:
 @dataclass
 class TrainConfig:
     run_name: str = "debug"
+    robot: str = "g1"  # supermimic.robots: g1 | gr2
     log_root: Path = Path("logs")
     seed: int = 0
     device: str = "cuda:0"

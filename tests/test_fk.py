@@ -1,13 +1,20 @@
-"""Torch FK must reproduce MuJoCo's xpos/xquat and body-origin velocities exactly."""
+"""Torch FK must reproduce MuJoCo's xpos/xquat and body-origin velocities exactly (every robot)."""
 
 import mujoco
 import numpy as np
 import pytest
 import torch
 
-from supermimic.data.motion_convert import load_g1_model
-from supermimic.kinematics.g1_fk import G1Kinematics
+from supermimic.kinematics.fk import HumanoidKinematics
 from supermimic.kinematics.rotations import quat_from_rotvec, rotvec_from_quat
+from supermimic.robots import get_robot
+from supermimic.robots.gr2 import ASSET_DIR as GR2_ASSET_DIR
+
+ROBOTS = ["g1", pytest.param("gr2", marks=pytest.mark.skipif(not GR2_ASSET_DIR.exists(), reason="GR2 asset not copied"))]
+
+
+def load_model(robot: str):
+    return get_robot(robot).load_model()
 
 
 def _random_state(model, rng, n):
@@ -49,17 +56,19 @@ def _signed_quat_err(q, q_ref):
     return np.abs(q * sign - q_ref).max()
 
 
+@pytest.mark.parametrize("robot", ROBOTS)
 @pytest.mark.parametrize("dtype,atol_pos,atol_vel", [(torch.float64, 1e-10, 1e-9), (torch.float32, 2e-5, 2e-4)])
-def test_fk_matches_mujoco(dtype, atol_pos, atol_vel):
+def test_fk_matches_mujoco(robot, dtype, atol_pos, atol_vel):
     torch.backends.cuda.matmul.allow_tf32 = False
-    model = load_g1_model()
+    model = load_model(robot)
     rng = np.random.default_rng(0)
     qpos, qvel = _random_state(model, rng, 64)
     pos_ref, quat_ref, lin_ref, ang_ref = _mujoco_reference(model, qpos, qvel)
 
-    fk = G1Kinematics(model, device="cpu", dtype=dtype)
+    fk = HumanoidKinematics(model, device="cpu", dtype=dtype)
     out = fk(torch.as_tensor(qpos, dtype=dtype), torch.as_tensor(qvel, dtype=dtype))
-    assert out["pos"].shape == (64, 30, 3) and out["quat"].shape == (64, 30, 4)
+    nb = model.nbody - 1
+    assert out["pos"].shape == (64, nb, 3) and out["quat"].shape == (64, nb, 4)
     np.testing.assert_allclose(out["pos"].numpy(), pos_ref, atol=atol_pos)
     assert _signed_quat_err(out["quat"].numpy(), quat_ref) < atol_pos * 10
     np.testing.assert_allclose(out["ang_vel"].numpy(), ang_ref, atol=atol_vel)
@@ -67,24 +76,26 @@ def test_fk_matches_mujoco(dtype, atol_pos, atol_vel):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
-def test_fk_cuda_matches_cpu():
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_fk_cuda_matches_cpu(robot):
     torch.backends.cuda.matmul.allow_tf32 = False
-    model = load_g1_model()
+    model = load_model(robot)
     rng = np.random.default_rng(1)
     qpos, qvel = _random_state(model, rng, 256)
-    fk_cpu = G1Kinematics(model, "cpu", torch.float32)
-    fk_gpu = G1Kinematics(model, "cuda", torch.float32)
+    fk_cpu = HumanoidKinematics(model, "cpu", torch.float32)
+    fk_gpu = HumanoidKinematics(model, "cuda", torch.float32)
     a = fk_cpu(torch.as_tensor(qpos, dtype=torch.float32), torch.as_tensor(qvel, dtype=torch.float32))
     b = fk_gpu(torch.as_tensor(qpos, dtype=torch.float32, device="cuda"), torch.as_tensor(qvel, dtype=torch.float32, device="cuda"))
     for k in a:
         np.testing.assert_allclose(a[k].numpy(), b[k].cpu().numpy(), atol=5e-5)
 
 
-def test_fk_is_differentiable():
-    model = load_g1_model()
+@pytest.mark.parametrize("robot", ROBOTS)
+def test_fk_is_differentiable(robot):
+    model = load_model(robot)
     rng = np.random.default_rng(2)
     qpos, qvel = _random_state(model, rng, 4)
-    fk = G1Kinematics(model, "cpu", torch.float64)
+    fk = HumanoidKinematics(model, "cpu", torch.float64)
     qp = torch.tensor(qpos, dtype=torch.float64, requires_grad=True)
     qv = torch.tensor(qvel, dtype=torch.float64, requires_grad=True)
     out = fk(qp, qv)
@@ -111,3 +122,7 @@ def test_rotvec_round_trip():
     v0 = torch.zeros(1, 3, dtype=torch.float64, requires_grad=True)
     quat_from_rotvec(v0).sum().backward()
     assert torch.isfinite(v0.grad).all()
+    # ... and of the log map at the identity (exactly zero orientation error): d rotvec / d xyz = 2.
+    q0 = torch.tensor([[1.0, 0.0, 0.0, 0.0]], dtype=torch.float64, requires_grad=True)
+    rotvec_from_quat(q0).sum().backward()
+    np.testing.assert_allclose(q0.grad.numpy(), [[0.0, 2.0, 2.0, 2.0]], atol=1e-9)
