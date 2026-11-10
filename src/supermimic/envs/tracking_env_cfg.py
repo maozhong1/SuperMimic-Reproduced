@@ -77,6 +77,7 @@ class SuperMimicEnvCfgArgs:
     root_tilt_threshold: float = 0.8
     joint_limit_weight: float = -2.0
     bin_frames: int = 50
+    normalize_bin_return: bool = False  # see MultiClipMotionCommandCfg.normalize_bin_return
     compact_library: bool = False
     anchor_obs: bool = False  # add BeyondMimic anchor-relative pose (9) to the goal group (plan D5 alt.)
     debug_vis: bool = False  # draw the reference ghost in the viewer (scripts/play.py)
@@ -143,6 +144,7 @@ def make_env_cfg(a: SuperMimicEnvCfgArgs) -> ManagerBasedRlEnvCfg:
             entity_name="robot",
             future_frames=a.future_frames,
             bin_frames=a.bin_frames,
+            normalize_bin_return=a.normalize_bin_return,
             pose_range=pose_range if a.reset_noise else {},
             velocity_range=vel_range if a.reset_noise else {},
             joint_position_range=(-0.1, 0.1) if a.reset_noise else (0.0, 0.0),

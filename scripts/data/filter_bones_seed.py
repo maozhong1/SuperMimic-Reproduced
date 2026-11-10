@@ -1,9 +1,14 @@
 """Appendix E filters for BONES-SEED (plan D16): name filter + feasibility filter.
 
-Reads converted npz clips (50 Hz, with 30 body link states) and writes
+Reads converted npz clips (50 Hz, per-body link states incl. the robot root body) and writes
 <npz_dir>/manifest_filtered.csv with one row per clip: name, frames, keep, reason.
 
   uv run python scripts/data/filter_bones_seed.py --npz-dir data/npz/bones_seed --workers 24
+  uv run python scripts/data/filter_bones_seed.py --robot gr2 --npz-dir ~/work/data/gr2_npz
+
+Robot-specific parts (root body name, standing-height window, foot collision geoms) come from the
+RobotSpec; the standing window is the G1 one (0.60-0.85 m around a 0.793 m stand height) scaled by the
+robot's stand height. The other thresholds are in metres/seconds and robot-independent.
 """
 
 from __future__ import annotations
@@ -15,6 +20,8 @@ from pathlib import Path
 
 import numpy as np
 import tyro
+
+from supermimic.robots import get_robot, stand_root_height
 
 # SONIC's keyword list (gear_sonic/data_process/filter_and_copy_bones_data.py) plus the paper's examples,
 # underscore-delimited to avoid substring false positives (plan D16). The pure-acrobatics terms were
@@ -39,6 +46,7 @@ PENETRATE_FRAC = 0.80
 FLOAT_Z = 0.02
 FLOAT_S = 0.5
 UPRIGHT_GZ = 0.9
+G1_STAND_H = 0.7928637524221748  # stand_root_height(G1); STAND_Z below is the G1 window
 STAND_Z = (0.60, 0.85)
 STILL_V = 0.1
 STILL_QD = 0.5
@@ -53,7 +61,9 @@ def name_filter(name: str) -> str | None:
     return None
 
 
-def feasibility_filter(npz_path: str) -> str | None:
+def feasibility_filter(npz_path: str, robot: str = "g1") -> str | None:
+    spec = get_robot(robot)
+    stand_z = tuple(z * stand_root_height(spec) / G1_STAND_H for z in STAND_Z)
     with np.load(npz_path) as d:
         names = [str(x) for x in d["body_names"]]
         pos = d["body_pos_w"]  # (T, 30, 3)
@@ -62,7 +72,7 @@ def feasibility_filter(npz_path: str) -> str | None:
         lin = d["body_lin_vel_w"]
     T = pos.shape[0]
     zmin = pos[:, :, 2].min(1)
-    lf, rf, pel = names.index("left_ankle_roll_link"), names.index("right_ankle_roll_link"), names.index("pelvis")
+    pel = names.index(spec.root_body)
     # elevated support: zmin > 0.20 for >= 0.6 s
     if _longest_run(zmin > ELEVATED_Z) >= ELEVATED_S * FPS:
         return "elevated_support"
@@ -72,12 +82,12 @@ def feasibility_filter(npz_path: str) -> str | None:
     # gravity z-component in pelvis frame: -(R^T e_z)_z = -(1 - 2(x^2+y^2)) for wxyz quaternion
     gz = -(1.0 - 2.0 * (q[:, 1] ** 2 + q[:, 2] ** 2))
     upright = gz < -UPRIGHT_GZ
-    standing = (pos[:, pel, 2] > STAND_Z[0]) & (pos[:, pel, 2] < STAND_Z[1])
+    standing = (pos[:, pel, 2] > stand_z[0]) & (pos[:, pel, 2] < stand_z[1])
     still = (np.linalg.norm(lin[:, pel], axis=1) < STILL_V) & (np.sqrt((jv**2).mean(1)) < STILL_QD)
     gate = upright & standing & still
     if _longest_run(gate) >= FLOAT_S * FPS:
         # Exact lowest point of the foot collision capsules (paper: mj_geomDistance to the plane).
-        foot_z = _foot_sole_height(npz_path, gate)
+        foot_z = _foot_sole_height(npz_path, gate, robot)
         floating = gate.copy()
         floating[gate] = foot_z > FLOAT_Z
         if _longest_run(floating) >= FLOAT_S * FPS:
@@ -85,42 +95,63 @@ def feasibility_filter(npz_path: str) -> str | None:
     return None
 
 
-_MODEL = None
-_FOOT_GEOMS = None
+_MODELS: dict = {}
 
 
-def _foot_sole_height(npz_path: str, gate: np.ndarray) -> np.ndarray:
-    """Lowest point over both feet's collision capsules, for the gated frames (returns len(gate.sum()),)."""
-    global _MODEL, _FOOT_GEOMS
-    import mujoco
+def _foot_geoms(spec):
     import re
 
-    if _MODEL is None:
-        from supermimic.data.motion_convert import load_g1_model
+    import mujoco
 
-        _MODEL = load_g1_model()
-        _FOOT_GEOMS = [g for g in range(_MODEL.ngeom) if re.match(r"^(left|right)_foot[1-7]_collision$", mujoco.mj_id2name(_MODEL, mujoco.mjtObj.mjOBJ_GEOM, g) or "")]
-        assert len(_FOOT_GEOMS) == 14 and all(_MODEL.geom_type[g] == mujoco.mjtGeom.mjGEOM_CAPSULE for g in _FOOT_GEOMS)
-    m = _MODEL
+    m = spec.load_model()
+    geoms = [g for g in range(m.ngeom) if re.match(spec.foot_geom_regex, mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or "")]
+    if spec.name == "g1":
+        assert len(geoms) == 14 and all(m.geom_type[g] == mujoco.mjtGeom.mjGEOM_CAPSULE for g in geoms)
+    assert geoms, f"no foot geoms match {spec.foot_geom_regex}"
+    return m, geoms
+
+
+def _geom_low_z(m, d, g) -> float:
+    """Exact lowest world z of one foot collision geom (box, capsule, sphere or mesh)."""
+    import mujoco
+
+    R, c, s, t = d.geom_xmat[g].reshape(3, 3), d.geom_xpos[g], m.geom_size[g], m.geom_type[g]
+    if t == mujoco.mjtGeom.mjGEOM_CAPSULE:
+        return c[2] - abs(R[2, 2]) * s[1] - s[0]
+    if t == mujoco.mjtGeom.mjGEOM_BOX:
+        return c[2] - np.abs(R[2]) @ s
+    if t == mujoco.mjtGeom.mjGEOM_SPHERE:
+        return c[2] - s[0]
+    if t == mujoco.mjtGeom.mjGEOM_MESH:
+        mid = m.geom_dataid[g]
+        v = m.mesh_vert[m.mesh_vertadr[mid] : m.mesh_vertadr[mid] + m.mesh_vertnum[mid]]
+        return (c[2] + (v @ R.T)[:, 2]).min()
+    raise ValueError(f"unsupported foot geom type {t}")
+
+
+def _foot_sole_height(npz_path: str, gate: np.ndarray, robot: str = "g1") -> np.ndarray:
+    """Lowest point over both feet's collision geoms, for the gated frames (returns len(gate.sum()),)."""
+    import mujoco
+
+    spec = get_robot(robot)
+    if robot not in _MODELS:
+        _MODELS[robot] = _foot_geoms(spec)
+    m, geoms = _MODELS[robot]
     d = mujoco.MjData(m)
     with np.load(npz_path) as z:
         names = [str(x) for x in z["body_names"]]
-        pel = names.index("pelvis")
+        pel = names.index(spec.root_body)
         root_pos = z["body_pos_w"][:, pel]
         root_quat = z["body_quat_w"][:, pel]
         jp = z["joint_pos"]
     idx = np.nonzero(gate)[0]
     out = np.empty(len(idx))
-    radius = m.geom_size[_FOOT_GEOMS, 0]
-    half = m.geom_size[_FOOT_GEOMS, 1]
     for k, t in enumerate(idx):
         d.qpos[:3] = root_pos[t]
         d.qpos[3:7] = root_quat[t]
         d.qpos[7:] = jp[t]
         mujoco.mj_kinematics(m, d)
-        cz = d.geom_xpos[_FOOT_GEOMS, 2]
-        axis_z = d.geom_xmat[_FOOT_GEOMS].reshape(-1, 3, 3)[:, 2, 2]  # world z of the capsule axis
-        out[k] = (cz - half * np.abs(axis_z) - radius).min()
+        out[k] = min(_geom_low_z(m, d, g) for g in geoms)
     return out
 
 
@@ -132,22 +163,23 @@ def _longest_run(mask: np.ndarray) -> int:
     return best
 
 
-def _one(path: str) -> tuple[str, int, str | None]:
+def _one(args: tuple[str, str]) -> tuple[str, int, str | None]:
+    path, robot = args
     name = Path(path).stem
     r = name_filter(name)
     frames = 0
     if r is None:
-        r = feasibility_filter(path)
+        r = feasibility_filter(path, robot)
     with np.load(path) as d:
         frames = int(d["joint_pos"].shape[0])
     return name, frames, r
 
 
-def main(npz_dir: Path, workers: int = 24, out: Path | None = None) -> None:
+def main(npz_dir: Path, workers: int = 24, out: Path | None = None, robot: str = "g1") -> None:
     files = sorted(str(p) for p in npz_dir.glob("*.npz"))
     print(f"{len(files)} clips")
     with mp.Pool(workers) as pool:
-        rows = pool.map(_one, files, chunksize=64)
+        rows = pool.map(_one, [(f, robot) for f in files], chunksize=64)
     out = out or npz_dir / "manifest_filtered.csv"
     with open(out, "w", newline="") as f:
         w = csv.writer(f)

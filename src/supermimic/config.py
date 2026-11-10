@@ -33,6 +33,7 @@ class EnvCfg:
     future_frames: int = 10
     compact_library: bool = False
     anchor_obs: bool = False
+    normalize_bin_return: bool = False  # reset-sampler bin returns normalised by the attainable horizon (clip ends)
 
 
 @dataclass

@@ -224,6 +224,11 @@ class MultiClipMotionCommand(CommandTerm):
         # drop the steps too close to the truncation point (plan D14).
         terminated = self._env.termination_manager.terminated[env_ids] if hasattr(self._env, "termination_manager") else torch.ones_like(lens, dtype=torch.bool)
         truncated = ~terminated & ~self.clip_end[env_ids]
+        if cfg.normalize_bin_return:
+            clip_ended = self.clip_end[env_ids] & ~terminated
+            if clip_ended.any():
+                steps_left = (lens[:, None] - torch.arange(T, device=self.device)[None, :]).clamp_min(1).double()
+                rtg = torch.where(clip_ended[:, None], rtg / (1.0 - cfg.gamma**steps_left), rtg)
         if truncated.any():
             if self.bootstrap_fn is not None:
                 v = self.bootstrap_fn(env_ids).double()  # (n,)
@@ -419,6 +424,12 @@ class MultiClipMotionCommandCfg(CommandTermCfg):
     ema_alpha: float = 0.05
     memory_alpha: float = 0.01
     min_remaining_steps: int = 100
+    # Clip-end episodes (finite horizon, not a fall) have a smaller achievable return-to-go near the
+    # end of the clip, which made the last bin of every clip look "hard" and attract the hard-bin resets.
+    # When True their return-to-go is divided by (1 - gamma^remaining), the fraction of the full-horizon
+    # return that is attainable, so bin returns are comparable along the clip (bounded by g_max).
+    # Off by default (bit-identical to the previous behaviour; G1 results are unchanged).
+    normalize_bin_return: bool = False
     max_logged_steps: int = 1024
     compact_library: bool = False
     library_fp16: bool = True

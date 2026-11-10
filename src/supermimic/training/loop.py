@@ -70,6 +70,7 @@ class Trainer:
                 replay_capacity=cfg.env.replay_capacity,
                 compact_library=cfg.env.compact_library,
                 anchor_obs=cfg.env.anchor_obs,
+                normalize_bin_return=cfg.env.normalize_bin_return,
                 seed=cfg.seed + 1000 * self.rank,
             ),
             device=self.device,
@@ -138,8 +139,15 @@ class Trainer:
         self.wm_trainer.opt.load_state_dict(ck["wm_opt"])
         self.policy_trainer.opt.load_state_dict(ck["policy_opt"])
         self.policy_trainer.critic_opt.load_state_dict(ck["critic_opt"])
-        self.command.bin_return.copy_(ck["bin_return"])
-        self.command.bin_memory.copy_(ck["bin_memory"])
+        ck_norm = bool(ck["config"].get("env", {}).get("normalize_bin_return", False))
+        if ck_norm != self.cfg.env.normalize_bin_return:
+            # The sampler statistics are on a different scale: start them afresh instead of mixing scales.
+            self.command.bin_return.fill_(self.command.cfg.g_max)
+            self.command.bin_memory.fill_(1.0 / self.lib.num_bins)
+            print(f"[INFO] normalize_bin_return changed ({ck_norm} -> {self.cfg.env.normalize_bin_return}): bin_return / bin_memory reset")
+        else:
+            self.command.bin_return.copy_(ck["bin_return"])
+            self.command.bin_memory.copy_(ck["bin_memory"])
         self.iteration = ck["iteration"]
         self.start_iteration = self.iteration
         self.num_updates = ck["num_updates"]
