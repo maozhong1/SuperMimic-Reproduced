@@ -1,9 +1,9 @@
 """Export a trained policy to ONNX and check it against PyTorch.
 
   uv run --with onnx --with onnxruntime python scripts/export_onnx.py \
-      --ckpt logs/gr2_100k/ckpt_0100000.pt --out logs/gr2_100k/policy_100000.onnx
+      --ckpt logs/gr2_full/ckpt_0200000.pt --out logs/gr2_full/policy_200000.onnx [--dynamic]
 
-Graph: ``action = policy(obs_hist, goal)``, batch dimension dynamic.
+Graph: ``action = policy(obs_hist, goal)``, batch size fixed to 1 (``--dynamic``: dynamic batch dimension).
   obs_hist [B, history * (3N+6)]  term-major history: joint_pos, joint_vel, base_ang_vel, projected_gravity, actions
   goal     [B, K * (2N+10)]       per frame: joint_pos N, joint_vel N, gravity 3, ang_vel_b 3, lin_vel_h 3, height 1
   action   [B, N]                 raw policy action; joint target = default_pose + action * action_scale (not in the graph)
@@ -37,10 +37,12 @@ class _Wrapper(torch.nn.Module):
 
 
 @torch.no_grad()
-def main(ckpt: Path, out: Path | None = None, opset: int = 17, tol: float = 1e-4, batches: list[int] = [1, 7, 256], seed: int = 0) -> None:
+def main(ckpt: Path, out: Path | None = None, opset: int = 17, tol: float = 1e-4, batches: list[int] = [1, 7, 256], seed: int = 0, dynamic: bool = False) -> None:
     import onnx
     import onnxruntime as ort
 
+    if not dynamic:
+        batches = [1]
     out = out or ckpt.with_suffix(".onnx")
     policy, cfg = load_policy_from_checkpoint(ckpt, "cpu")
     policy.float().eval()
@@ -51,15 +53,16 @@ def main(ckpt: Path, out: Path | None = None, opset: int = 17, tol: float = 1e-4
     model = _Wrapper(policy).eval()
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    dummy = (torch.zeros(2, obs_dim), torch.zeros(2, goal_dim))
+    dummy = (torch.zeros(2 if dynamic else 1, obs_dim), torch.zeros(2 if dynamic else 1, goal_dim))
+    axes = {"obs_hist": {0: "batch"}, "goal": {0: "batch"}, "action": {0: "batch"}} if dynamic else None
     torch.onnx.export(model, dummy, str(out), input_names=["obs_hist", "goal"], output_names=["action"], opset_version=opset,
-                      dynamic_axes={"obs_hist": {0: "batch"}, "goal": {0: "batch"}, "action": {0: "batch"}}, dynamo=False)
+                      dynamic_axes=axes, dynamo=False)
     onnx.checker.check_model(onnx.load(str(out)))
 
     scales = robot.action_scale_fn()
     default_pose = [0.0] * n  # GR2 default pose is all zeros; G1 would need its own (see RobotSpec)
     meta = {
-        "robot": cfg["robot"], "num_joints": n, "history": pcfg.history, "obs_dim": obs_dim, "goal_dim": goal_dim,
+        "robot": cfg["robot"], "batch": "dynamic" if dynamic else 1, "num_joints": n, "history": pcfg.history, "obs_dim": obs_dim, "goal_dim": goal_dim,
         "obs_terms": [{"name": k, "dim": d} for k, d in obs_terms(n)], "joint_names": list(robot.joint_names),
         "action_scale": [float(scales[j]) for j in robot.joint_names], "default_joint_pos": default_pose,
         "note": "joint target = default_joint_pos + action * action_scale",
