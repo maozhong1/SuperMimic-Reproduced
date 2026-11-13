@@ -28,7 +28,7 @@ def main(npz_dir: Path, out: Path, manifest: Path | None = None, workers: int = 
         with np.load(f) as d:
             if "joint_names" in d.files and tuple(str(n) for n in d["joint_names"]) != spec.joint_names:
                 raise ValueError(f"{f}: joint order does not match the {robot} model order")
-            names = [str(n) for n in d["body_names"]]
+            names = spec.body_names_of(d)
             r = names.index(spec.root_body)
             ref = np.concatenate([d["body_pos_w"][:, r], d["body_quat_w"][:, r], d["joint_pos"], d["body_lin_vel_w"][:, r], d["body_ang_vel_w"][:, r], d["joint_vel"]], axis=1)
         return f.stem, ref.astype(np.float16)

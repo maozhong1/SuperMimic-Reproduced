@@ -4,7 +4,7 @@ A spec names the MJCF, the actuated joint order, the bodies the tracking reward 
 mjlab entity configuration. All tensor widths (state, observation, goal, context) follow from
 the number of actuated hinges ``N``:
 
-    state  s  = qpos(7+N) | qvel(6+N)          13 + 2N   (G1: 71,  GR2: 67)
+    state  s  = qpos(7+N) | qvel(6+N)          13 + 2N   (G1: 71,  GR2: 67, H2: 71)
     obs    o  = q, qd, w_b, g_b, a_prev          3N + 6   (G1: 93,  GR2: 87)
     goal   g  = q-q0, qd, g, w_b, v_h, h          2N + 10  (G1: 68,  GR2: 64) per future frame
     ctx    xi = friction, encoder bias, COM        N + 4   (G1: 33,  GR2: 31)
@@ -59,11 +59,29 @@ class RobotSpec:
     action_scale_fn: Callable[[], dict[str, float]]
     nconmax: int
     njmax: int
+    default_joint_pos: tuple[float, ...] | None = None  # default / stand pose; None = all zeros (G1 and GR2 read theirs from the mjlab entity)
     family: str = ""  # robots of one family share checkpoints / libraries (same joints and states), e.g. gr2_wrist -> gr2
 
     @property
     def compat(self) -> str:
         return self.family or self.name
+
+    def npz_body_names(self) -> tuple[str, ...]:
+        """Body order of ``body_*_w`` in npz files that carry no ``body_names``: MuJoCo model order, world first
+        (``g1_csv_to_h2_npz2.py`` output)."""
+        import mujoco
+
+        m = self.load_model()
+        return tuple(mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(m.nbody))
+
+    def body_names_of(self, npz) -> list[str]:
+        """``body_names`` of an opened npz, or the model order for name-less files (shape checked)."""
+        if "body_names" in npz.files:
+            return [str(n) for n in npz["body_names"]]
+        names = self.npz_body_names()
+        n = npz["body_pos_w"].shape[1]
+        assert n == len(names), f"{self.name}: npz has {n} bodies, the model has {len(names)} and the file lists no body_names"
+        return list(names)
 
     @property
     def xml_path(self) -> Path:
@@ -118,6 +136,8 @@ def stand_root_height(spec: RobotSpec, clearance: float = 0.001) -> float:
     m = spec.load_model()
     d = mujoco.MjData(m)
     d.qpos[:] = 0.0
+    if spec.default_joint_pos is not None:
+        d.qpos[7:] = spec.default_joint_pos
     d.qpos[3] = 1.0
     mujoco.mj_kinematics(m, d)
     lowest = np.inf
@@ -155,7 +175,11 @@ def get_robot(name: str) -> RobotSpec:
         from supermimic.robots.gr2 import GR2_WRIST
 
         return GR2_WRIST
-    raise ValueError(f"unknown robot {name!r} (known: g1, gr2, gr2_wrist)")
+    if name == "h2":
+        from supermimic.robots.h2 import H2
+
+        return H2
+    raise ValueError(f"unknown robot {name!r} (known: {', '.join(ROBOT_NAMES)})")
 
 
-ROBOT_NAMES = ("g1", "gr2", "gr2_wrist")
+ROBOT_NAMES = ("g1", "gr2", "gr2_wrist", "h2")

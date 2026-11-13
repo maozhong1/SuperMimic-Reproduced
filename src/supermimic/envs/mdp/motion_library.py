@@ -121,7 +121,7 @@ class MotionLibrary:
         for f in (npz_files if ref_chunks is not None else []):
             with np.load(f) as d:
                 if body_idx is None:
-                    names = [str(n) for n in d["body_names"]]
+                    names = self.robot.body_names_of(d)
                     body_idx = np.array([names.index(n) for n in self.body_names])
                     root_idx = names.index(self.robot.root_body)
                 if "joint_names" in d.files:

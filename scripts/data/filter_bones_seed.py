@@ -65,7 +65,7 @@ def feasibility_filter(npz_path: str, robot: str = "g1") -> str | None:
     spec = get_robot(robot)
     stand_z = tuple(z * stand_root_height(spec) / G1_STAND_H for z in STAND_Z)
     with np.load(npz_path) as d:
-        names = [str(x) for x in d["body_names"]]
+        names = spec.body_names_of(d)
         pos = d["body_pos_w"]  # (T, 30, 3)
         quat = d["body_quat_w"]  # (T, 30, 4) wxyz
         jv = d["joint_vel"]
@@ -139,7 +139,7 @@ def _foot_sole_height(npz_path: str, gate: np.ndarray, robot: str = "g1") -> np.
     m, geoms = _MODELS[robot]
     d = mujoco.MjData(m)
     with np.load(npz_path) as z:
-        names = [str(x) for x in z["body_names"]]
+        names = spec.body_names_of(z)
         pel = names.index(spec.root_body)
         root_pos = z["body_pos_w"][:, pel]
         root_quat = z["body_quat_w"][:, pel]

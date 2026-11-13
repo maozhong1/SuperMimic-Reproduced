@@ -60,7 +60,7 @@ def main(ckpt: Path, out: Path | None = None, opset: int = 17, tol: float = 1e-4
     onnx.checker.check_model(onnx.load(str(out)))
 
     scales = robot.action_scale_fn()
-    default_pose = [0.0] * n  # GR2 default pose is all zeros; G1 would need its own (see RobotSpec)
+    default_pose = list(robot.default_joint_pos) if robot.default_joint_pos is not None else [0.0] * n  # GR2: zeros; G1 would need its own (see RobotSpec)
     meta = {
         "robot": cfg["robot"], "batch": "dynamic" if dynamic else 1, "num_joints": n, "history": pcfg.history, "obs_dim": obs_dim, "goal_dim": goal_dim,
         "obs_terms": [{"name": k, "dim": d} for k, d in obs_terms(n)], "joint_names": list(robot.joint_names),

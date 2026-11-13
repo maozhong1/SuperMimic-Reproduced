@@ -86,6 +86,8 @@ env -u PYTHONPATH uv run torchrun --nproc_per_node 4 -m supermimic.scripts.train
 # Other robot: --robot gr2 (Fourier GR2, fixed-head 27 DoF; MJCF + meshes from UniLab in src/supermimic/assets/gr2/)
 env -u PYTHONPATH uv run sm-train --robot gr2 --run-name gr2 --data.npz-dir data/npz/bones_seed_gr2 \
   --env.num-envs 4096 --policy-trainer.batch-size 2048
+
+# Unitree H2 (fixed-head 29 DoF, 16 tracked bodies): see H2_TRAINING_README.md
 ```
 
 Robots are described in `src/supermimic/robots/` (MJCF, actuated joint order, tracked / anchor / root bodies, foot geoms, mjlab entity); every tensor width follows from the joint count N (state 13+2N, observation 3N+6, goal 2N+10 per frame, context N+4). Checkpoints record the robot, so evaluation, replay and media scripts pick it up; checkpoints and libraries from before this change are G1. GR2 keeps UniLab's control contract (XML position actuators, action scale 0.25·effort/kp, zero default pose) and uses `base` (pelvis) as both anchor and root.
@@ -114,7 +116,7 @@ ffmpeg -i media/showcase.mp4 -vf "fps=10,scale=560:-1,split[a][b];[a]palettegen=
 ```
 src/supermimic/
   config.py            TrainConfig (tyro CLI: robot / data / env / world_model / policy / wm_trainer / policy_trainer / schedule)
-  robots/              RobotSpec per humanoid (g1, gr2): MJCF, joint order, tracked bodies, mjlab entity, action scale
+  robots/              RobotSpec per humanoid (g1, gr2, h2): MJCF, joint order, tracked bodies, mjlab entity, action scale
   data/                CSV → 50 Hz npz conversion, replay buffer, simulator recorder
   envs/                mjlab ManagerBasedRlEnv config: multi-clip motion command, return-based resets, full-state I/O, sim context
     mdp/               motion_library (fp16 compact library + online FK), commands, observations, rewards, terminations
