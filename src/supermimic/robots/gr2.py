@@ -17,6 +17,7 @@ Anchor and root are both ``base`` (pelvis), the SONIC convention for GR2.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 from supermimic.robots import RobotSpec
@@ -126,4 +127,14 @@ GR2 = RobotSpec(
     # Link meshes collide with the floor (G1 uses capsules); sized generously, to be checked on CUDA.
     nconmax=64,
     njmax=400,
+)
+
+
+# Experiment: the wrist chain is yaw -> pitch -> roll, but GR2 tracks only hand_yaw_link, so wrist pitch / roll
+# move no tracked body. hand_roll_link's orientation depends on all three wrist joints.
+GR2_WRIST = dataclasses.replace(
+    GR2,
+    name="gr2_wrist",
+    family="gr2",
+    tracked_bodies=GR2_TRACKED_BODIES + ("left_hand_roll_link", "right_hand_roll_link"),
 )

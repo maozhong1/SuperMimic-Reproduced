@@ -111,7 +111,7 @@ class MotionLibrary:
         if len(npz_files) == 1 and str(npz_files[0]).endswith(".pt"):
             assert compact, "packed .pt libraries are compact-only"
             pack = torch.load(npz_files[0], map_location="cpu", weights_only=False)
-            if pack.get("robot", "g1") != robot:  # libraries packed before supermimic.robots are G1
+            if get_robot(pack.get("robot", "g1")).compat != self.robot.compat:  # libraries packed before supermimic.robots are G1
                 raise ValueError(f"{npz_files[0]} was packed for {pack.get('robot', 'g1')}, not {robot}")
             self._ref = pack["ref"].to(device=self.device, dtype=store_dtype)
             assert self._ref.shape[1] == self.ref_dim, f"{npz_files[0]}: {self._ref.shape[1]}-d reference states, {robot} needs {self.ref_dim}"

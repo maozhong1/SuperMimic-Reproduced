@@ -131,7 +131,7 @@ class Trainer:
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
         ck_robot = ck["config"].get("robot", "g1")
-        if ck_robot != self.robot.name:
+        if get_robot(ck_robot).compat != self.robot.compat:
             raise ValueError(f"{path} was trained on {ck_robot}, this run is {self.robot.name}")
         self.wm.load_state_dict(ck["wm"])
         self.policy.load_state_dict(ck["policy"])

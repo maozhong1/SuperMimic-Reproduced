@@ -59,6 +59,11 @@ class RobotSpec:
     action_scale_fn: Callable[[], dict[str, float]]
     nconmax: int
     njmax: int
+    family: str = ""  # robots of one family share checkpoints / libraries (same joints and states), e.g. gr2_wrist -> gr2
+
+    @property
+    def compat(self) -> str:
+        return self.family or self.name
 
     @property
     def xml_path(self) -> Path:
@@ -146,7 +151,11 @@ def get_robot(name: str) -> RobotSpec:
         from supermimic.robots.gr2 import GR2
 
         return GR2
-    raise ValueError(f"unknown robot {name!r} (known: g1, gr2)")
+    if name == "gr2_wrist":
+        from supermimic.robots.gr2 import GR2_WRIST
+
+        return GR2_WRIST
+    raise ValueError(f"unknown robot {name!r} (known: g1, gr2, gr2_wrist)")
 
 
-ROBOT_NAMES = ("g1", "gr2")
+ROBOT_NAMES = ("g1", "gr2", "gr2_wrist")
